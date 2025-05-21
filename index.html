@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Геометрия - Эллипсоид, Сетка и Тессеракт</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; background-color: #111827; color: #f3f4f6; }
+        #container { width: 100vw; height: 100vh; display: block; }
+        .controls { position: absolute; top: 20px; left: 20px; background-color: rgba(31, 41, 55, 0.8); padding: 15px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); display: flex; flex-direction: column; gap: 10px; max-width: 200px; z-index: 10; }
+        .controls button {
+            background-color: #3b82f6; /* Синий */
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            text-align: left;
+        }
+        .controls button:hover {
+            background-color: #2563eb; /* Темно-синий */
+        }
+        .controls button:active {
+            transform: scale(0.98);
+        }
+        .controls button.active {
+            background-color: #1d4ed8; /* Еще темнее синий */
+            font-weight: bold;
+        }
+        #loading-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 20px;
+            background-color: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 10px;
+            display: none; /* Скрыт по умолчанию */
+            z-index: 20;
+        }
+        #message-box {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: #ef4444; /* Красный для ошибок */
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            display: none; /* Скрыто по умолчанию */
+            max-width: 300px;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+        }
+        #message-box.success {
+            background-color: #22c55e; /* Зеленый для успеха */
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-indicator">Загрузка шрифта и моделей...</div>
+    <div class="controls">
+        <h2 class="text-xl font-semibold mb-2 text-white">Выберите объект:</h2>
+        <button id="btnText" class="active">3D Текст</button>
+        <button id="btnCube">Куб</button>
+        <button id="btnSphere">Сфера</button>
+        <button id="btnCone">Конус</button>
+        <button id="btnCylinder">Цилиндр</button>
+        <button id="btnTorus">Тор (Бублик)</button>
+        <button id="btnIcosahedron">Икосаэдр</button>
+        <button id="btnEllipsoid">Эллипсоид</button>
+        <button id="btnTesseract">Тессеракт</button>
+    </div>
+    <div id="container"></div>
+    <div id="message-box"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+        import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+        import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+
+        let scene, camera, renderer, controls;
+        let currentObject = null; 
+        const loaderContainer = document.getElementById('container');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const messageBox = document.getElementById('message-box');
+
+        const buttons = {
+            text: document.getElementById('btnText'),
+            cube: document.getElementById('btnCube'),
+            sphere: document.getElementById('btnSphere'),
+            cone: document.getElementById('btnCone'),
+            cylinder: document.getElementById('btnCylinder'),
+            torus: document.getElementById('btnTorus'),
+            icosahedron: document.getElementById('btnIcosahedron'),
+            ellipsoid: document.getElementById('btnEllipsoid'), 
+            tesseract: document.getElementById('btnTesseract'),
+        };
+
+        const vibrantColors = [0xff00ff, 0x00ffff, 0xffff00, 0xff69b4, 0x7fffd4, 0xffa500, 0x32cd32, 0xda70d6, 0x40e0d0, 0xdda0dd]; 
+        let colorIndex = 0;
+
+        // --- Tesseract Data ---
+        const tesseractVertices4D = [];
+        for (let i = 0; i < 16; i++) {
+            tesseractVertices4D.push({
+                x: (i & 1) ? 1 : -1,
+                y: (i & 2) ? 1 : -1,
+                z: (i & 4) ? 1 : -1,
+                w: (i & 8) ? 1 : -1,
+            });
+        }
+
+        const tesseractEdges = [];
+        for (let i = 0; i < 16; i++) {
+            for (let j = i + 1; j < 16; j++) {
+                let diff = 0;
+                if (tesseractVertices4D[i].x !== tesseractVertices4D[j].x) diff++;
+                if (tesseractVertices4D[i].y !== tesseractVertices4D[j].y) diff++;
+                if (tesseractVertices4D[i].z !== tesseractVertices4D[j].z) diff++;
+                if (tesseractVertices4D[i].w !== tesseractVertices4D[j].w) diff++;
+                if (diff === 1) {
+                    tesseractEdges.push(i, j);
+                }
+            }
+        }
+        // --- End Tesseract Data ---
+
+        function showMessage(text, type = 'error', duration = 3000) {
+            messageBox.textContent = text;
+            messageBox.className = type === 'success' ? 'success' : '';
+            messageBox.style.display = 'block';
+            setTimeout(() => { messageBox.style.opacity = '1'; }, 10);
+
+            setTimeout(() => {
+                messageBox.style.opacity = '0';
+                setTimeout(() => { messageBox.style.display = 'none'; }, 500);
+            }, duration);
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111827);
+
+            camera = new THREE.PerspectiveCamera(75, loaderContainer.clientWidth / loaderContainer.clientHeight, 0.1, 1000);
+            camera.position.set(6, 6, 12); 
+            camera.lookAt(0,0,0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(loaderContainer.clientWidth, loaderContainer.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            loaderContainer.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.0); 
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 2.0); 
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            const gridSize = 50;
+            const gridDivisions = 50;
+            const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0xffffff, 0xffffff);
+            gridHelper.position.y = -4; 
+            scene.add(gridHelper);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 1;
+            controls.maxDistance = 100; 
+
+            window.addEventListener('resize', onWindowResize, false);
+            loadFontAndCreateObject('text'); 
+            animate(); 
+        }
+
+        function onWindowResize() {
+            camera.aspect = loaderContainer.clientWidth / loaderContainer.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(loaderContainer.clientWidth, loaderContainer.clientHeight);
+        }
+
+        function clearCurrentObject() {
+            if (currentObject) {
+                currentObject.traverse(child => {
+                    if (child.isMesh || child.isLineSegments || child.isArrowHelper) { 
+                        if (child.geometry) child.geometry.dispose();
+                        if (child.material) {
+                            if (Array.isArray(child.material)) {
+                                child.material.forEach(m => {
+                                    if (m.map) m.map.dispose(); 
+                                    m.dispose();
+                                });
+                            } else {
+                                if (child.material.map) child.material.map.dispose();
+                                child.material.dispose();
+                            }
+                        }
+                        if (child.isArrowHelper) {
+                            if (child.line && child.line.geometry) child.line.geometry.dispose();
+                            if (child.line && child.line.material) child.line.material.dispose();
+                            if (child.cone && child.cone.geometry) child.cone.geometry.dispose();
+                            if (child.cone && child.cone.material) child.cone.material.dispose();
+                        }
+                    }
+                });
+                scene.remove(currentObject);
+            }
+            currentObject = null;
+        }
+        
+        function addVertexMarkersToCube(boxGeometry, group) {
+            const vertexMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 }); 
+            const markerRadius = boxGeometry.parameters.width / 25; 
+            const vertexSphereGeometry = new THREE.SphereGeometry(markerRadius, 12, 12);
+
+            const w = boxGeometry.parameters.width / 2;
+            const h = boxGeometry.parameters.height / 2;
+            const d = boxGeometry.parameters.depth / 2;
+
+            const corners = [
+                new THREE.Vector3(w, h, d), new THREE.Vector3(w, h, -d),
+                new THREE.Vector3(w, -h, d), new THREE.Vector3(w, -h, -d),
+                new THREE.Vector3(-w, h, d), new THREE.Vector3(-w, h, -d),
+                new THREE.Vector3(-w, -h, d), new THREE.Vector3(-w, -h, -d),
+            ];
+
+            corners.forEach(cornerPos => {
+                const marker = new THREE.Mesh(vertexSphereGeometry.clone(), vertexMaterial.clone()); 
+                marker.position.copy(cornerPos);
+                group.add(marker);
+            });
+        }
+
+        function addAngleIndicatorsToCube(boxGeometry, group) {
+            const w = boxGeometry.parameters.width / 2;
+            const h = boxGeometry.parameters.height / 2; 
+            const d = boxGeometry.parameters.depth / 2;  
+
+            const arrowLength = w * 0.8; 
+            const headLengthRatio = 0.25; 
+            const headWidthRatio = 0.15;  
+
+            const origin = new THREE.Vector3(w, -h, -d); 
+
+            const dirX = new THREE.Vector3(-1, 0, 0); 
+            const arrowX = new THREE.ArrowHelper(dirX, origin, arrowLength, 0x00dd00, arrowLength * headLengthRatio, arrowLength * headWidthRatio);
+            group.add(arrowX);
+
+            const dirY = new THREE.Vector3(0, 1, 0); 
+            const arrowY = new THREE.ArrowHelper(dirY, origin, arrowLength, 0x00dd00, arrowLength * headLengthRatio, arrowLength * headWidthRatio);
+            group.add(arrowY);
+            
+            const dirZ = new THREE.Vector3(0, 0, 1); 
+            const arrowZ = new THREE.ArrowHelper(dirZ, origin, arrowLength, 0x00dd00, arrowLength * headLengthRatio, arrowLength * headWidthRatio);
+            group.add(arrowZ);
+        }
+
+        function createText(font) {
+            clearCurrentObject();
+            const textGroup = new THREE.Group();
+            const textGeometry = new TextGeometry('3D Geometry', { // Текст на английском
+                font: font, size: 1.2, height: 0.3, curveSegments: 12,
+                bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelOffset: 0, bevelSegments: 5
+            });
+            textGeometry.center(); 
+            const textMaterial = new THREE.MeshStandardMaterial({
+                color: 0xff1493, metalness: 0.7, roughness: 0.2, emissive: 0x220011, 
+            });
+            const textMesh = new THREE.Mesh(textGeometry, textMaterial);
+            textGroup.add(textMesh);
+            currentObject = textGroup;
+            scene.add(currentObject);
+            setActiveButton('text');
+            loadingIndicator.style.display = 'none';
+        }
+
+        function createTesseract() {
+            clearCurrentObject();
+            const tesseractGroup = new THREE.Group();
+            const ud = tesseractGroup.userData; 
+
+            ud.isTesseract = true;
+            ud.angleXW = 0; ud.angleYW = 0; ud.angleZW = 0;
+            ud.angleXY = 0; ud.angleXZ = 0; ud.angleYZ = 0;
+            ud.projectionDistance = 4; 
+            ud.scale = 2.5; 
+
+            ud.innerCellIndices = [0, 1, 2, 3, 4, 5, 6, 7]; 
+
+            const linePoints = [];
+            for (let i = 0; i < tesseractEdges.length / 2; i++) {
+                linePoints.push(new THREE.Vector3(), new THREE.Vector3());
+            }
+            const lineGeometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+            const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 }); 
+            ud.allEdgeLines = new THREE.LineSegments(lineGeometry, lineMaterial);
+            tesseractGroup.add(ud.allEdgeLines);
+            
+            const innerCellMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xff4500, 
+                metalness: 0.4, 
+                roughness: 0.5,
+                side: THREE.DoubleSide 
+            });
+            ud.innerCellMesh = new THREE.Mesh(undefined, innerCellMaterial);
+            tesseractGroup.add(ud.innerCellMesh);
+
+            const vertexMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff }); 
+            const vertexSphereGeometry = new THREE.SphereGeometry(0.04 * ud.scale, 8, 8); 
+            ud.vertexMeshes = [];
+            for(let i=0; i<16; i++) {
+                const vertexMesh = new THREE.Mesh(vertexSphereGeometry.clone(), vertexMaterial.clone());
+                tesseractGroup.add(vertexMesh);
+                ud.vertexMeshes.push(vertexMesh);
+            }
+
+            currentObject = tesseractGroup;
+            scene.add(currentObject);
+            setActiveButton('tesseract');
+            loadingIndicator.style.display = 'none';
+        }
+        
+        function project4Dto3D(point4D, projectionDistance) {
+            const w = point4D.w;
+            const perspectiveFactor = projectionDistance / (projectionDistance - w + 1e-6); 
+            return new THREE.Vector3(
+                point4D.x * perspectiveFactor,
+                point4D.y * perspectiveFactor,
+                point4D.z * perspectiveFactor
+            );
+        }
+
+        function rotate4D(point, angleXW, angleYW, angleZW, angleXY, angleXZ, angleYZ) {
+            let x = point.x, y = point.y, z = point.z, w = point.w;
+            let temp;
+            temp = x * Math.cos(angleXY) - y * Math.sin(angleXY); y = x * Math.sin(angleXY) + y * Math.cos(angleXY); x = temp;
+            temp = x * Math.cos(angleXZ) - z * Math.sin(angleXZ); z = x * Math.sin(angleXZ) + z * Math.cos(angleXZ); x = temp;
+            temp = x * Math.cos(angleXW) - w * Math.sin(angleXW); w = x * Math.sin(angleXW) + w * Math.cos(angleXW); x = temp;
+            temp = y * Math.cos(angleYZ) - z * Math.sin(angleYZ); z = y * Math.sin(angleYZ) + z * Math.cos(angleYZ); y = temp;
+            temp = y * Math.cos(angleYW) - w * Math.sin(angleYW); w = y * Math.sin(angleYW) + w * Math.cos(angleYW); y = temp;
+            temp = z * Math.cos(angleZW) - w * Math.sin(angleZW); w = z * Math.sin(angleZW) + w * Math.cos(angleZW); z = temp;
+            return { x, y, z, w };
+        }
+
+        function createShape(type) {
+            clearCurrentObject();
+            if (type === 'tesseract') {
+                createTesseract();
+                return;
+            }
+
+            const shapeGroup = new THREE.Group(); 
+            let geometry;
+            const baseSize = 3.5; 
+            const material = new THREE.MeshStandardMaterial({
+                color: vibrantColors[colorIndex % vibrantColors.length],
+                metalness: 0.6, roughness: 0.4,
+            });
+            colorIndex = (colorIndex + 1) % vibrantColors.length;
+
+            let mesh; 
+
+            switch (type) {
+                case 'cube': geometry = new THREE.BoxGeometry(baseSize, baseSize, baseSize); break;
+                case 'sphere': geometry = new THREE.SphereGeometry(baseSize / 1.5, 48, 48); break;
+                case 'cone': geometry = new THREE.ConeGeometry(baseSize / 2, baseSize * 1.2, 48); break;
+                case 'cylinder': geometry = new THREE.CylinderGeometry(baseSize / 2, baseSize / 2, baseSize * 1.5, 48); break;
+                case 'torus': geometry = new THREE.TorusGeometry(baseSize / 2, baseSize / 5, 32, 100); break;
+                case 'icosahedron': geometry = new THREE.IcosahedronGeometry(baseSize / 1.5, 1); break;
+                case 'ellipsoid': 
+                    geometry = new THREE.SphereGeometry(baseSize / 1.5, 48, 48); 
+                    mesh = new THREE.Mesh(geometry, material);
+                    mesh.scale.set(1.5, 1, 0.75); 
+                    shapeGroup.add(mesh);
+                    currentObject = shapeGroup;
+                    scene.add(currentObject);
+                    setActiveButton(type);
+                    loadingIndicator.style.display = 'none';
+                    return; 
+                default: showMessage(`Неизвестный тип фигуры: ${type}`); loadingIndicator.style.display = 'none'; return;
+            }
+
+            mesh = new THREE.Mesh(geometry, material); 
+            shapeGroup.add(mesh);
+
+            if (type === 'cube' && geometry.parameters && geometry.parameters.width && geometry.parameters.height && geometry.parameters.depth) { 
+                addVertexMarkersToCube(geometry, shapeGroup);
+                addAngleIndicatorsToCube(geometry, shapeGroup);
+            }
+            
+            currentObject = shapeGroup;
+            scene.add(currentObject);
+            setActiveButton(type);
+            loadingIndicator.style.display = 'none';
+        }
+        
+        const fontLoader = new FontLoader();
+        let loadedFont = null;
+
+        function loadFontAndCreateObject(objectType) {
+            loadingIndicator.style.display = 'block';
+            if (objectType === 'text') {
+                if (loadedFont) {
+                     createText(loadedFont);
+                } else {
+                    fontLoader.load('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/droid/droid_sans_regular.typeface.json',
+                        function (font) { 
+                            loadedFont = font;
+                            createText(font);
+                            showMessage('Шрифт успешно загружен!', 'success');
+                        },
+                        undefined, 
+                        function (err) { 
+                            console.error('Ошибка загрузки шрифта:', err);
+                            showMessage('Ошибка загрузки шрифта. 3D текст может отображаться некорректно.');
+                            createShape('cube'); 
+                        }
+                    );
+                }
+            } else {
+                createShape(objectType);
+            }
+        }
+
+        function setActiveButton(type) {
+            for (const key in buttons) buttons[key].classList.remove('active');
+            if (buttons[type]) buttons[type].classList.add('active');
+        }
+
+        buttons.text.addEventListener('click', () => loadFontAndCreateObject('text'));
+        buttons.cube.addEventListener('click', () => loadFontAndCreateObject('cube'));
+        buttons.sphere.addEventListener('click', () => loadFontAndCreateObject('sphere'));
+        buttons.cone.addEventListener('click', () => loadFontAndCreateObject('cone'));
+        buttons.cylinder.addEventListener('click', () => loadFontAndCreateObject('cylinder'));
+        buttons.torus.addEventListener('click', () => loadFontAndCreateObject('torus'));
+        buttons.icosahedron.addEventListener('click', () => loadFontAndCreateObject('icosahedron'));
+        buttons.ellipsoid.addEventListener('click', () => loadFontAndCreateObject('ellipsoid')); 
+        buttons.tesseract.addEventListener('click', () => loadFontAndCreateObject('tesseract'));
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = Date.now() * 0.0001; 
+
+            if (currentObject && currentObject.userData.isTesseract) {
+                const ud = currentObject.userData;
+                ud.angleXW += 0.0051 + Math.sin(time * 1.1) * 0.001;
+                ud.angleYW += 0.0032 + Math.sin(time * 1.3) * 0.001;
+                ud.angleZW += 0.0023 + Math.sin(time * 1.5) * 0.001;
+                ud.angleXY += 0.0014 + Math.sin(time * 1.7) * 0.0005;
+                ud.angleXZ += 0.0015 + Math.sin(time * 1.9) * 0.0005;
+                ud.angleYZ += 0.0006 + Math.sin(time * 2.1) * 0.0005;
+
+                const projectedVertices3D = [];
+                const innerCellProjectedPoints = [];
+
+                for (let i = 0; i < 16; i++) {
+                    const v4D_original = tesseractVertices4D[i];
+                    const v4D_scaled = { 
+                        x: v4D_original.x * ud.scale, y: v4D_original.y * ud.scale, 
+                        z: v4D_original.z * ud.scale, w: v4D_original.w * ud.scale 
+                    };
+                    const v4D_rotated = rotate4D(v4D_scaled, ud.angleXW, ud.angleYW, ud.angleZW, ud.angleXY, ud.angleXZ, ud.angleYZ);
+                    const v3D_projected = project4Dto3D(v4D_rotated, ud.projectionDistance * ud.scale);
+                    
+                    projectedVertices3D.push(v3D_projected);
+                    if (ud.vertexMeshes[i]) ud.vertexMeshes[i].position.copy(v3D_projected);
+                    if (ud.innerCellIndices.includes(i)) innerCellProjectedPoints.push(v3D_projected.clone());
+                }
+
+                const linePositions = ud.allEdgeLines.geometry.attributes.position;
+                for (let j = 0; j < tesseractEdges.length / 2; j++) {
+                    const v1 = projectedVertices3D[tesseractEdges[j * 2]];
+                    const v2 = projectedVertices3D[tesseractEdges[j * 2 + 1]];
+                    linePositions.setXYZ(j * 2, v1.x, v1.y, v1.z);
+                    linePositions.setXYZ(j * 2 + 1, v2.x, v2.y, v2.z);
+                }
+                linePositions.needsUpdate = true;
+
+                if (ud.innerCellMesh) {
+                    if (ud.innerCellMesh.geometry) ud.innerCellMesh.geometry.dispose();
+                    if (innerCellProjectedPoints.length === 8) { 
+                        try {
+                            const newInnerCellGeom = new ConvexGeometry(innerCellProjectedPoints);
+                            ud.innerCellMesh.geometry = newInnerCellGeom;
+                        } catch (e) {
+                            console.warn("Ошибка создания ConvexGeometry для внутренней ячейки:", e);
+                            if(ud.innerCellMesh.geometry) ud.innerCellMesh.geometry.dispose();
+                            ud.innerCellMesh.geometry = new THREE.BufferGeometry(); 
+                        }
+                    }
+                }
+
+            } else if (currentObject) { 
+                currentObject.rotation.y += 0.002;
+                currentObject.rotation.x += 0.001;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        try {
+            init();
+        } catch (error) {
+            console.error("Ошибка инициализации Three.js:", error);
+            loaderContainer.innerHTML = `<div style="color: red; text-align: center; padding: 20px; font-size: 18px;">
+                Ошибка при загрузке 3D-сцены. Пожалуйста, проверьте консоль браузера (F12) для деталей.
+                Возможно, ваш браузер не поддерживает WebGL или возникла проблема с загрузкой ресурсов.
+            </div>`;
+            showMessage('Критическая ошибка при инициализации 3D-сцены.');
+        }
+    </script>
+</body>
+</html>
